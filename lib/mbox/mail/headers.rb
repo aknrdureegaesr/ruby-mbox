@@ -20,94 +20,127 @@
 require 'stringio'
 
 require 'mbox/mail/headers/status'
-require 'mbox/mail/headers/contenttype'
+require 'mbox/mail/headers/content_type'
 
-class Mbox
-    class Mail
-        # Representation of email headers.
-        class Headers < Hash
-            # Create a Headers object with starting passed headers.
-            def initialize (headers={})
-                self.merge!(headers)
-            end
+class Mbox; class Mail
 
-            def parse (text)
-                stream = StringIO.new(text)
-                last   = nil
+class Headers
+	def self.name_to_symbol (name)
+		return name if name.is_a? Symbol
 
-                while !stream.eof? && !(line = stream.readline).chomp.empty?
-                    if !line.match(/^\s/)
-                        matches = line.match(/^([^:]*):\s*(.*)$/)
+		name = name.to_s.downcase.gsub('-', '_').to_sym
 
-                        if !matches
-                            next
-                        end
+		if name.empty?
+			raise ArgumentError, 'cannot pass empty name'
+		end
 
-                        name  = matches[1]
-                        value = matches[2]
+		name
+	end
 
-                        if self[name]
-                            if self[name].is_a?(String)
-                                self[name] = [self[name]]
-                            end
+	def self.symbol_to_name (name)
+		name.to_s.downcase.gsub('_', '-').gsub(/(\A|-)(.)/) {|match|
+			match.upcase
+		}
+	end
 
-                            if self[name].is_a?(Array)
-                                self[name] << value
-                            end
-                        else
-                            self[name] = value
-                        end
+	def self.parse (input)
+		new.parse(input)
+	end
 
-                        last = name
-                    else
-                        if self[last]
-                            if self[last].is_a?(String)
-                                self[last] << " #{line}"
-                            elsif self[last].is_a?(Array)
-                                self[last].last << " #{line}"
-                            end
-                        end
-                    end
-                end
+	include Enumerable
 
-                self.normalize
+	def initialize (start = {})
+		@data = {}
 
-                return self
-            end
+		merge! start
+	end
 
-            # Apply normalization to headers.
-            #
-            # Transforms the Status header to a Status object.
-            # Transforms the Content-Type header to a ContentType object.
-            def normalize
-                if !self['Status'].is_a?(Status)
-                    if !self['Status'] || !self['Status'].is_a?(String)
-                        self['Status'] = Status.new(false, false)
-                    else
-                        self['Status'] = Status.new(self['Status'].include?('R'), self['Status'].include?('O'))
-                    end
-                end
+	def each (&block)
+		@data.each(&block)
+	end
 
-                if !self['Content-Type'].is_a?(ContentType)
-                    if !self['Content-Type'] || !self['Content-Type'].is_a?(String)
-                        self['Content-Type'] = ContentType.new
-                    else
-                        self['Content-Type'] = ContentType.parse(self['Content-Type'])
-                    end
-                end
-            end
+	def [] (name)
+		@data[Headers.name_to_symbol(name)]
+	end
 
-            def to_s
-                result = ''
+	def []= (name, value)
+		name = Headers.name_to_symbol(name)
 
-                self.each {|name, values|
-                    [values].flatten.each {|value|
-                        result << "#{name}: #{value}\n"
-                    }
-                }
+		value = case name
+			when :status       then Status.parse(value)
+			when :content_type then ContentType.parse(value)
+			else                    value
+		end
 
-                return result
-            end
-        end
+		if tmp = @data[name] && !tmp.is_a?(Array)
+			@data[name] = [tmp]
+		end
+
+		if @data[name].is_a?(Array)
+			@data[name] << value
+		else
+			@data[name] = value
+		end
+	end
+
+	def delete (name)
+		@data.delete(Headers.name_to_symbol(name))
+	end
+
+	def merge! (other)
+		other.each {|name, value|
+			self[name] = value
+		}
+
+		self
+	end
+
+	def merge (other)
+		clone.merge!(other)
+	end
+
+	def parse (input)
+		input = if input.respond_to? :to_io
+			input.to_io
+		elsif input.is_a? String
+			StringIO.new(input)
+		else
+			raise ArgumentError, 'I do not know what to do.'
+		end
+
+		last = nil
+
+		until input.eof? || (line = input.readline).chomp.empty?
+			if !line.match(/^\s/)
+				next unless matches = line.match(/^([^:]+):\s*(.+)$/)
+
+				whole, name, value = matches.to_a
+
+				self[name] = value
+				last       = name
+			elsif self[last]
+				if self[last].is_a?(String)
+					self[last] << " #{line}"
+				elsif self[last].is_a?(Array)
+					self[last].last << " #{line}"
+				end
+			end
+		end
+
+		self
+	end
+
+	def to_s
+		result = ''
+
+		each {|name, values|
+			[values].flatten.each {|value|
+				result << "#{Headers.symbol_to_name(name)}: #{value}\n"
+			}
+		}
+
+		result
+	end
+end
     end
 end
